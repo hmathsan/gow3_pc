@@ -259,6 +259,7 @@ private:
     } disk_stats{}, disk_reported{};
     std::chrono::steady_clock::time_point disk_report{};
     [[nodiscard]] bool DiskShadersActive() const;
+    void SpikeTranslate(const char* index_path);
     void IndexDiskShaders();
     struct DiskPrefetch;
     DiskPrefetch* disk_prefetch = nullptr; ///< owned; deleted by StopDiskPrefetch

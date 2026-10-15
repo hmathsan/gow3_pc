@@ -15,6 +15,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <fstream>
+#include <sstream>
 #include <map>
 #ifdef _WIN32
 #include <windows.h>
@@ -29,6 +30,7 @@
 #include "gow3_overlay.h"
 #include "gow3_toggles.h"
 #include "core/emulator_settings.h"
+#include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
 #include "shader_recompiler/info.h"
 #include "video_core/cache_storage.h"
@@ -735,10 +737,12 @@ void RegisterPipelineData(const GraphicsPipelineKey& key, u64 hash,
                                        fmt::format("g_{:#018x}", hash), ar.TakeOff());
 }
 
+static constexpr u32 FetchBuffersMagic = 0x46425546; // "FUBF"
+
 void RegisterShaderMeta(const Shader::Info& info,
                         const std::optional<Shader::Gcn::FetchShaderData>& fetch_shader_data,
                         const Shader::StageSpecialization& spec, size_t perm_hash,
-                        size_t perm_idx) {
+                        size_t perm_idx, const std::vector<AmdGpu::Buffer>* fetch_buffers) {
     if (!Storage::DataBase::Instance().IsOpened()) {
         return;
     }
@@ -754,6 +758,13 @@ void RegisterShaderMeta(const Shader::Info& info,
 
     spec.Serialize(ar);
     info.Serialize(ar);
+    // gow3: the vertex attribute V#s a vertex shader was translated with (they are read from
+    // guest memory and are not part of the specialization). Optional, after everything else.
+    if (fetch_buffers && !fetch_buffers->empty()) {
+        meta.Write(FetchBuffersMagic);
+        meta.Write(u32(fetch_buffers->size()));
+        meta.Write(fetch_buffers->data(), fetch_buffers->size() * sizeof(AmdGpu::Buffer));
+    }
 
     Storage::DataBase::Instance().Save(Storage::BlobType::ShaderMeta,
                                        fmt::format("{:#018x}", perm_hash), ar.TakeOff());
@@ -771,7 +782,8 @@ void RegisterShaderBinary(std::vector<u32>&& spv, u64 pgm_hash, size_t perm_idx)
 
 bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
                     std::optional<Shader::Gcn::FetchShaderData>& fetch_shader_data,
-                    Shader::StageSpecialization& spec, size_t& perm_idx) {
+                    Shader::StageSpecialization& spec, size_t& perm_idx,
+                    std::vector<AmdGpu::Buffer>* fetch_buffers = nullptr) {
     Serialization::Reader meta{ar};
 
     u32 meta_version{};
@@ -800,6 +812,17 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
     }
 
     fetch_shader_data = spec.fetch_shader_data;
+    if (fetch_buffers && ar.Remaining() >= 2 * sizeof(u32)) {
+        u32 magic{}, count{};
+        meta.Read(magic);
+        if (magic == FetchBuffersMagic) {
+            meta.Read(count);
+            if (ar.Remaining() >= count * sizeof(AmdGpu::Buffer)) {
+                fetch_buffers->resize(count);
+                meta.Read(fetch_buffers->data(), count * sizeof(AmdGpu::Buffer));
+            }
+        }
+    }
     return true;
 }
 
@@ -1142,6 +1165,144 @@ void PipelineCache::WarmUp(const std::function<void(u32, u32)>& progress) {
     Storage::DataBase::Instance().FinishPreload();
 }
 
+// gow3 (GOW3_SPIKE_TRANSLATE=<index file>): checks that the saved SPIR-V can be rebuilt from the
+// game's own files. For every saved shader meta it reads the GCN code named by the index (lines of
+// "hash file header_pos code_start length"), translates it with the recorded runtime info and
+// bindings, and compares the result with the saved SPIR-V.
+void PipelineCache::SpikeTranslate(const char* index_path) {
+    struct Location {
+        std::string file;
+        u64 start{};
+        u64 length{};
+    };
+    std::unordered_map<u64, Location> index;
+    {
+        std::ifstream in{index_path};
+        std::string line;
+        while (std::getline(in, line)) {
+            std::istringstream words{line};
+            std::string hash;
+            words >> hash;
+            // The file name may hold spaces: the last three numbers are read from the end.
+            const auto last = line.rfind(' ');
+            if (hash.empty() || last == std::string::npos || last < 3) {
+                continue;
+            }
+            const auto before_last = line.rfind(' ', last - 1);
+            if (before_last == std::string::npos || before_last < 2) {
+                continue;
+            }
+            const auto third = line.rfind(' ', before_last - 1);
+            if (third == std::string::npos || third <= hash.size()) {
+                continue;
+            }
+            Location loc;
+            loc.file = line.substr(hash.size() + 1, third - hash.size() - 1);
+            const long long start = std::strtoll(line.c_str() + before_last + 1, nullptr, 10);
+            if (start < 0) {
+                continue; // code start not found
+            }
+            loc.start = u64(start);
+            loc.length = std::strtoull(line.c_str() + last + 1, nullptr, 10);
+            index.emplace(std::strtoull(hash.c_str(), nullptr, 16), std::move(loc));
+        }
+    }
+    auto& db = Storage::DataBase::Instance();
+    u32 total = 0, no_code = 0, skipped_gs = 0, skipped_fetch = 0, same = 0, differ = 0,
+        no_spv = 0;
+    for (const auto& name : db.ListBlobs(Storage::BlobType::ShaderMeta)) {
+        ++total;
+        std::vector<u8> meta_blob;
+        db.Load(Storage::BlobType::ShaderMeta, name, meta_blob);
+        Serialization::Archive meta_ar{std::move(meta_blob)};
+        Program saved;
+        Shader::StageSpecialization spec{};
+        spec.info = &saved.info;
+        std::optional<Shader::Gcn::FetchShaderData> fetch;
+        size_t perm_idx{};
+        std::vector<AmdGpu::Buffer> fetch_buffers;
+        if (!LoadShaderMeta(meta_ar, saved.info, fetch, spec, perm_idx, &fetch_buffers)) {
+            continue;
+        }
+        const u64 hash = saved.info.pgm_hash;
+        const auto hw_stage = saved.info.hw_stage;
+        const auto it = index.find(hash);
+        if (it == index.end()) {
+            ++no_code;
+            continue;
+        }
+        if (hw_stage == Shader::HwStage::Geometry) {
+            ++skipped_gs; // its runtime info points at the copy shader in guest memory
+            continue;
+        }
+        if (saved.info.has_fetch_shader && fetch_buffers.empty()) {
+            ++skipped_fetch; // saved before the attribute V#s were recorded
+            continue;
+        }
+        std::vector<u32> saved_spv;
+        db.Load(Storage::BlobType::ShaderBinary, fmt::format("{:#018x}_{}", hash, perm_idx),
+                saved_spv);
+        if (saved_spv.empty()) {
+            ++no_spv;
+            continue;
+        }
+        std::vector<u32> code(it->second.length / sizeof(u32));
+        {
+            std::ifstream in{it->second.file, std::ios::binary};
+            in.seekg(std::streamoff(it->second.start));
+            in.read(reinterpret_cast<char*>(code.data()), std::streamsize(code.size() * 4));
+            if (!in) {
+                ++no_code;
+                continue;
+            }
+        }
+        std::array<u32, Shader::ShaderParams::NumShaderUserData> user_data{};
+        std::copy_n(saved.info.flattened_ud_buf.begin(),
+                    std::min(user_data.size(), saved.info.flattened_ud_buf.size()),
+                    user_data.begin());
+        std::printf("Spike translate: %#018lx %d\n", static_cast<unsigned long>(hash),
+                    int(hw_stage));
+        std::fflush(stdout);
+        const Shader::ShaderParams params{user_data, code, hash};
+        Shader::Info info{hw_stage, saved.info.sw_stage, params};
+        Shader::RuntimeInfo runtime = spec.runtime_info;
+        Shader::Backend::Bindings binding = spec.start;
+        // The recorded resource data replaces the walk of the guest's resource tables, and the
+        // recorded attribute V#s replace the fetch shader read from guest memory.
+        Shader::Gcn::FetchShaderSnapshot snapshot;
+        snapshot.info = &info;
+        snapshot.fetch = fetch;
+        snapshot.buffers = fetch_buffers;
+        std::optional<Shader::Gcn::ScopedFetchShaderSnapshot> scoped_snapshot;
+        if (saved.info.has_fetch_shader) {
+            scoped_snapshot.emplace(snapshot);
+        }
+        Shader::Info::recorded_flat_buf = &saved.info.flattened_ud_buf;
+        const auto ir = Shader::TranslateProgram(code, pools, info, runtime, profile);
+        Shader::Info::recorded_flat_buf = nullptr;
+        const auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime, ir, binding);
+        scoped_snapshot.reset();
+        if (spv == saved_spv) {
+            ++same;
+        } else {
+            ++differ;
+            size_t first = 0;
+            while (first < spv.size() && first < saved_spv.size() && spv[first] == saved_spv[first]) {
+                ++first;
+            }
+            std::printf("Spike translate: DIFFERS %#018lx stage %d: %zu words, saved %zu, first "
+                        "difference at word %zu (is_srt %d)\n",
+                        static_cast<unsigned long>(hash), int(hw_stage), spv.size(),
+                        saved_spv.size(), first, int(info.srt_info.walker_func != nullptr));
+        }
+    }
+    std::printf("Spike translate: %u metas, %u identical, %u different, %u without code, %u "
+                "geometry skipped, %u vertex shaders without recorded V#s skipped, %u without "
+                "SPIR-V\n",
+                total, same, differ, no_code, skipped_gs, skipped_fetch, no_spv);
+    std::fflush(stdout);
+}
+
 void PipelineCache::StartOnDemand() {
     const bool compatible = CheckCacheProfile();
     auto& db = Storage::DataBase::Instance();
@@ -1174,6 +1335,9 @@ void PipelineCache::StartOnDemand() {
             }
         }
         disk_shaders = true;
+    }
+    if (const char* spike = std::getenv("GOW3_SPIKE_TRANSLATE")) {
+        SpikeTranslate(spike);
     }
     db.FinishPreload();
     StartBinaryConversion();

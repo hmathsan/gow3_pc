@@ -325,9 +325,38 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
                               EmulatorSettings.IsPipelineCacheEnabled();
     const bool capture_only = EmulatorSettingsImpl::Flag("GOW3_PIPELINE_BINARY_ISOLATED", false) &&
                               EmulatorSettingsImpl::Flag("GOW3_PIPELINE_CAPTURE_ONLY", false);
+    // Launcher "Shader pre-compilation": build every saved pipeline ahead of time, either while
+    // playing (background) or on the loading screen (start).
+    const Precompile precompile = ParsePrecompile(std::getenv("GOW3_SHADER_PRECOMPILE"));
+    const auto warm_up_on_loading_screen = [&] {
+        Gow3Overlay::SetLoading(true, 0, 0);
+        PresentLoadingFrame();
+        auto last = std::chrono::steady_clock::now();
+        rasterizer->GetPipelineCache().WarmUp([&](u32 done, u32 total) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last < std::chrono::milliseconds(250)) {
+                return;
+            }
+            last = now;
+            Gow3Overlay::SetLoading(true, done, total);
+            PresentLoadingFrame();
+        });
+        Gow3Overlay::SetLoading(false, 0, 0);
+    };
     if (UseOnDemandPipelines(binary_cache, instance.GetPipelineBinaryGlobalKey().keySize != 0,
                             capture_only)) {
+        // The on-demand start sets up the disk shaders (stable permutation numbers), which the
+        // warm-ups below rely on.
         rasterizer->GetPipelineCache().StartOnDemand();
+        std::printf("Pipeline startup: shader pre-compilation %s\n",
+                    precompile == Precompile::Start        ? "before start"
+                    : precompile == Precompile::Background ? "in the background"
+                                                           : "off");
+        if (precompile == Precompile::Background) {
+            rasterizer->GetPipelineCache().StartBackgroundWarmUp();
+        } else if (precompile == Precompile::Start) {
+            warm_up_on_loading_screen();
+        }
         return;
     }
 
@@ -339,19 +368,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         rasterizer->GetPipelineCache().StartBackgroundWarmUp()) {
         return;
     }
-    Gow3Overlay::SetLoading(true, 0, 0);
-    PresentLoadingFrame();
-    auto last = std::chrono::steady_clock::now();
-    rasterizer->GetPipelineCache().WarmUp([&](u32 done, u32 total) {
-        const auto now = std::chrono::steady_clock::now();
-        if (now - last < std::chrono::milliseconds(250)) {
-            return;
-        }
-        last = now;
-        Gow3Overlay::SetLoading(true, done, total);
-        PresentLoadingFrame();
-    });
-    Gow3Overlay::SetLoading(false, 0, 0);
+    warm_up_on_loading_screen();
 
 }
 

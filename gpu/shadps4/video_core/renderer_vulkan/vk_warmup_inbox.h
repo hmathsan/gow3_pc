@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <deque>
 #include <mutex>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -14,6 +15,17 @@ namespace Vulkan {
 
 inline bool UseOnDemandPipelines(bool binary_cache, bool supported, bool capture_only) {
     return binary_cache && supported && !capture_only;
+}
+
+/// Launcher "Shader pre-compilation" (GOW3_SHADER_PRECOMPILE): whether the saved pipelines are
+/// built ahead of time, and whether the game waits for them.
+enum class Precompile { Off, Background, Start };
+
+inline Precompile ParsePrecompile(const char* value) {
+    const std::string_view text = value ? value : "";
+    return text == "background" ? Precompile::Background
+           : text == "start"    ? Precompile::Start
+                                : Precompile::Off;
 }
 
 /// Warm-up threads: one on four cores or fewer, otherwise all but two, at most six.

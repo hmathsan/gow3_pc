@@ -6,6 +6,7 @@
 #include "common/assert.h"
 #include "common/types.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <vector>
 
@@ -54,6 +55,10 @@ struct Archive {
 
     [[nodiscard]] bool IsEoS() const {
         return offset >= container.size();
+    }
+
+    [[nodiscard]] size_t Remaining() const {
+        return container.size() - std::min<size_t>(offset, container.size());
     }
 
     Archive() = default;

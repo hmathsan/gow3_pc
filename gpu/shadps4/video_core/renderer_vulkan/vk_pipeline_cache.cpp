@@ -600,7 +600,7 @@ void PipelineCache::PublishShaders(bool wait) {
             }
             build->spec.info = &program->info;
             RegisterShaderMeta(program->info, build->spec.fetch_shader_data, build->spec,
-                               perm_hash, build->permutation);
+                               perm_hash, build->permutation, &build->fetch.buffers);
             program->InsertPermut(build->module, std::move(build->spec), build->permutation);
             disk_stats.compiled += DiskShadersActive();
             build->module = nullptr;
@@ -1276,7 +1276,10 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         auto spec = Shader::StageSpecialization(new_program->info, runtime_info, profile, start);
         const auto perm_hash = HashCombine(params.hash, 0);
 
-        RegisterShaderMeta(new_program->info, spec.fetch_shader_data, spec, perm_hash, 0);
+        Shader::Gcn::FetchShaderSnapshot fetch_capture;
+        fetch_capture.Capture(new_program->info);
+        RegisterShaderMeta(new_program->info, spec.fetch_shader_data, spec, perm_hash, 0,
+                           &fetch_capture.buffers);
         new_program->AddPermut(module, std::move(spec));
         new_program->info_template = std::make_unique<Shader::Info>(new_program->info);
         Program* program = new_program.get();
@@ -1334,7 +1337,10 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding);
         ++compiles_started;
 
-        RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
+        Shader::Gcn::FetchShaderSnapshot fetch_capture;
+        fetch_capture.Capture(info);
+        RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx,
+                           &fetch_capture.buffers);
         disk_stats.compiled += DiskShadersActive();
         std::unique_lock lk{programs_mutex};
         program->InsertPermut(module, std::move(spec), perm_idx);

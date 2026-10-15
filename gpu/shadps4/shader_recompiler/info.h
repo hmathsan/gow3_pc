@@ -237,7 +237,15 @@ struct Info : InfoPersistent {
         bnd.user_data += ud_mask.NumRegs();
     }
 
+    /// gow3: when set, a translation takes this recorded flattened buffer instead of walking the
+    /// guest's resource tables (the shader pre-compilation replays a saved shader's sharps).
+    static inline thread_local const std::vector<u32>* recorded_flat_buf = nullptr;
+
     void RefreshFlatBuf() {
+        if (recorded_flat_buf) {
+            flattened_ud_buf = *recorded_flat_buf;
+            return;
+        }
         flattened_ud_buf.resize(srt_info.flattened_bufsize_dw);
         ASSERT(user_data.size() <= NUM_USER_DATA_REGS);
         std::memcpy(flattened_ud_buf.data(), user_data.data(), user_data.size_bytes());
