@@ -29,7 +29,8 @@ bool HandleEvent(const SDL_Event& event);
 void UpdateTextInput(SDL_Window* window);
 
 /// Start-up loading screen (pipeline cache warm-up): `total` 0 shows no count.
-void SetLoading(bool active, u32 done, u32 total);
+/// `title` (a string literal) replaces the default header; null keeps it.
+void SetLoading(bool active, u32 done, u32 total, const char* title = nullptr);
 /// Background cache warm-up: a small corner note while the game runs; `total` 0 hides it.
 void SetBackgroundLoading(u32 done, u32 total);
 /// Saved shaders read into memory at start (any thread): a lower-right note; `total` 0 hides it.

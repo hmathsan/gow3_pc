@@ -13,6 +13,7 @@
 
 #include <miniz.h>
 
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <future>
@@ -324,6 +325,19 @@ void DataBase::Clear() {
         }
     }
     LOG_WARNING(Render, "Pipeline cache cleared ({} files): it is rebuilt for this build", removed);
+}
+
+void DataBase::WaitIdle() {
+    // ponytail: polls; the IO thread has no completion signal. Only the seed import waits.
+    while (opened) {
+        {
+            std::scoped_lock lk{submit_mutex};
+            if (!num_requests) {
+                return;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 void DataBase::FinishPreload() {

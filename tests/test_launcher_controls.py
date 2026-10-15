@@ -1,8 +1,11 @@
 import os
+from pathlib import Path
 import queue
 import struct
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 from paths import ROOT
 sys.path.insert(0, str(ROOT / 'launcher'))
@@ -104,6 +107,32 @@ class ControlMapTest(unittest.TestCase):
         self.assertNotIn('GOW3_DRAW_PIPE', old)  # the old free-text field is ignored
         self.assertEqual(launcher.game_environment({**settings, 'parallel_warmup': False})['GOW3_PARALLEL_WARMUP'], '0')
         self.assertEqual(launcher.game_environment({**settings, 'background_warmup': False})['GOW3_BACKGROUND_WARMUP'], '0')
+
+    def test_shader_precompile_environment(self):
+        keys = ('GOW3_SHADER_PRECOMPILE', 'GOW3_SHADER_SEED')
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(launcher, 'PORT_DIR', Path(tmp)), \
+                mock.patch.dict(os.environ):
+            for key in keys:
+                os.environ.pop(key, None)
+            settings = dict(launcher.APP_DEFAULTS)
+            env = launcher.game_environment(settings)
+            self.assertEqual(env['GOW3_SHADER_PRECOMPILE'], 'off')
+            self.assertNotIn('GOW3_SHADER_SEED', env)
+            for bad in ('', 'on', None, 'START'):
+                self.assertEqual(launcher.game_environment({**settings, 'shader_precompile': bad})
+                                 ['GOW3_SHADER_PRECOMPILE'], 'off')
+            # Without a shipped seed the modes still run on the player's own store.
+            env = launcher.game_environment({**settings, 'shader_precompile': 'start'})
+            self.assertEqual(env['GOW3_SHADER_PRECOMPILE'], 'start')
+            self.assertNotIn('GOW3_SHADER_SEED', env)
+            (Path(tmp) / launcher.SHADER_SEED).write_bytes(b'seed')
+            env = launcher.game_environment({**settings, 'shader_precompile': 'background'})
+            self.assertEqual(env['GOW3_SHADER_PRECOMPILE'], 'background')
+            self.assertEqual(env['GOW3_SHADER_SEED'], str(Path(tmp) / launcher.SHADER_SEED))
+            # A value inherited from the shell never survives a saved "off".
+            os.environ['GOW3_SHADER_SEED'] = 'x'
+            env = launcher.game_environment(settings)
+            self.assertNotIn('GOW3_SHADER_SEED', env)
 
     def test_temporal_upscaler_stays_off_with_a_saved_2_1_8_switch(self):
         # 2.1.8 showed the experimental switch; a player who turned it on must not keep it on now that it is hidden.

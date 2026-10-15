@@ -32,6 +32,8 @@ public:
         return opened;
     }
     void FinishPreload();
+    /// gow3: waits until every queued Save is on disk (ListBlobs and ForEachBlob see it).
+    void WaitIdle();
     /// gow3: removes every cached blob (an incompatible cache is rebuilt, not ignored).
     void Clear();
 

@@ -3,8 +3,11 @@
 
 #pragma once
 
+#include <filesystem>
 #include <functional>
 #include <chrono>
+#include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -125,6 +128,14 @@ struct PrepWorker {
 
 struct PreparedDraw;
 
+/// gow3: a shader seed (zip of saved pipeline keys and shader metas, plus where each shader's
+/// code is in the game files) and the game folder it is read against.
+struct SeedImport {
+    std::filesystem::path seed;
+    std::filesystem::path game_dir;
+    std::function<void(u32 done, u32 total)> progress;
+};
+
 class PipelineCache {
 public:
     explicit PipelineCache(const Instance& instance, Scheduler& scheduler,
@@ -137,7 +148,8 @@ public:
     /// gow3: the same load on low-priority threads while the game runs; the GPU thread takes
     /// the results a few at a time (PumpWarmUp). False when it cannot (zip archive store).
     bool StartBackgroundWarmUp();
-    void StartOnDemand();
+    /// gow3: `seed` (optional) adds the shaders and pipelines of a seed to the store first.
+    void StartOnDemand(const SeedImport* seed = nullptr);
     void Sync();
     void ReportCompilerStats();
 
@@ -260,6 +272,13 @@ private:
     std::chrono::steady_clock::time_point disk_report{};
     [[nodiscard]] bool DiskShadersActive() const;
     void SpikeTranslate(const char* index_path);
+    /// gow3: translates a saved shader again from its GCN `code`, with the data its meta holds
+    /// (specialization, resource data, vertex attribute V#s). False when it cannot.
+    bool TranslateSaved(const Shader::Info& saved, const Shader::StageSpecialization& spec,
+                        const std::optional<Shader::Gcn::FetchShaderData>& fetch,
+                        const std::vector<AmdGpu::Buffer>& fetch_buffers,
+                        std::span<const u32> code, Shader::Info& info, std::vector<u32>& spv);
+    bool ImportSeed(const SeedImport& seed);
     void IndexDiskShaders();
     struct DiskPrefetch;
     DiskPrefetch* disk_prefetch = nullptr; ///< owned; deleted by StopDiskPrefetch

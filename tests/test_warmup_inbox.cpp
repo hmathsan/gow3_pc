@@ -22,6 +22,20 @@ int main() {
     assert(ParsePrecompile("off") == Precompile::Off && ParsePrecompile("1") == Precompile::Off);
     assert(ParsePrecompile("background") == Precompile::Background);
     assert(ParsePrecompile("start") == Precompile::Start);
+    {
+        const auto loc = ParseSeedLocation("0x00000000c9e7c40c\tEXEC/WAD/PS4_LE/A B.WAD\t31483401\t2252");
+        assert(loc && loc->hash == 0xc9e7c40cull && loc->file == "EXEC/WAD/PS4_LE/A B.WAD");
+        assert(loc->start == 31483401 && loc->length == 2252);
+        assert(!ParseSeedLocation("") && !ParseSeedLocation("0x0\tf\t1\t2252"));
+        assert(!ParseSeedLocation("0x1\tf\t-1\t2252") && !ParseSeedLocation("0x1\tf\t1"));
+        assert(!ParseSeedLocation("0x1\t\t1\t2252") && !ParseSeedLocation("0x1\tf\t1\t12x"));
+        assert(*FreePermutationIndex({}) == 0 && *FreePermutationIndex({0, 1, 3}) == 2);
+        std::vector<unsigned> all;
+        for (unsigned i = 0; i < 64; ++i) {
+            all.push_back(i);
+        }
+        assert(!FreePermutationIndex(all));
+    }
     assert(WarmupThreadCount(1) == 1 && WarmupThreadCount(2) == 1 && WarmupThreadCount(4) == 1);
     assert(WarmupThreadCount(6) == 4 && WarmupThreadCount(8) == 6 && WarmupThreadCount(32) == 6);
 

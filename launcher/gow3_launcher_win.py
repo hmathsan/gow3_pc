@@ -312,7 +312,7 @@ APP_DEFAULTS = {'ui_language': 'en', 'game_dir': os.environ.get('GOW3_GAME_DIR',
                 'video_backend': 'auto', 'gamemode': False, 'mangohud': False, 'desktop_integration': True, 'user_dir': '',
                 'mods_dir': '', 'mods_enabled': True, 'patches_dir': '', 'language': '1',
                 'hdr': False, 'draw_pipe': '', 'readbacks': '', 'no_msaa': '', 'stream_memory': 'cached',
-                'gpu_id': '', 'partial_height_views': True, 'disk_shaders': True, 'shader_prefetch': True, 'shader_notes': True, 'background_warmup': True, 'parallel_warmup': True, 'pipeline_binary_cache': True,
+                'gpu_id': '', 'partial_height_views': True, 'disk_shaders': True, 'shader_prefetch': True, 'shader_notes': True, 'shader_precompile': 'off', 'background_warmup': True, 'parallel_warmup': True, 'pipeline_binary_cache': True,
                 'perf_diag': False, 'frame_capture_key': False, 'frame_stats': False, 'gpu_profile': False,
                 'vk_validation': False, 'close_on_play': False, 'discord_rpc': False,
                 'check_updates': False, 'game_patches': {}, 'controls': {}, 'pad_style': 'playstation',
@@ -402,6 +402,11 @@ NO_MSAA_HINT = ("The game's 2-sample depth buffer, read as a texture by its ligh
 STREAM_MEMORY = [('cached', ('System RAM (cached, default)',)),
                  ('host', ('System RAM (uncached)',)),
                  ('device', ('GPU memory (previous behavior)',))]
+SHADER_PRECOMPILE = [('off', ('Off (compile when needed)',)),
+                     ('background', ('While playing',)),
+                     ('start', ('Before the game starts',))]
+# The shaders of a full playthrough, shipped beside the launcher (tools/export_shader_seed.py).
+SHADER_SEED = 'shader_seed.zip'
 FRAMES_QUEUED = [('1', ('1 (lowest latency)',)), ('2', ('2',)), ('0', ('Unlimited',))]
 UI_LANGUAGES = gow3_lang.LANGUAGE_NAMES
 
@@ -759,6 +764,13 @@ def game_environment(s):
     env['GOW3_DISK_SHADERS'] = '1' if s.get('disk_shaders', True) else '0'
     env['GOW3_SHADER_PREFETCH'] = '1' if s.get('shader_prefetch', True) else '0'
     env['GOW3_SHADER_NOTES'] = '1' if s.get('shader_notes', True) else '0'
+    precompile = s.get('shader_precompile', 'off')
+    env['GOW3_SHADER_PRECOMPILE'] = precompile if precompile in ('background', 'start') else 'off'
+    env.pop('GOW3_SHADER_SEED', None)
+    if env['GOW3_SHADER_PRECOMPILE'] != 'off':
+        seed = PORT_DIR / SHADER_SEED
+        if seed.is_file():
+            env['GOW3_SHADER_SEED'] = str(seed)
     for key, name in (('frame_stats', 'GOW3_FRAME_STATS'), ('gpu_profile', 'GOW3_GPU_PROFILE'),
                       ('vk_validation', 'GOW3_VK_VALIDATION'), ('frame_capture_key', 'GOW3_FRAME_CAPTURE_KEY')):
         if s[key]:
@@ -1296,6 +1308,12 @@ class Launcher:
                      'Заметка в правом нижнем углу показывает чтение кэша шейдеров при запуске и компиляцию новых '
                      'шейдеров, чтобы было видно причину короткого рывка. Выключите, чтобы экран оставался чистым.'),
                    restart=True)
+        self.row(f, _('Shader pre-compilation'), self.choice(f, 'shader_precompile', 'app', SHADER_PRECOMPILE),
+                 _('Builds the shaders of the whole game ahead of time from your own game files, so new areas '
+                   'stutter less. While playing: the game starts at once and builds them in the background. '
+                   'Before the game starts: a progress window, then no shader stutter. The first time takes '
+                   'about 15 seconds; later starts are quicker. Switch it off if the frame rate is lower '
+                   'afterwards or the game uses too much memory. Takes effect on the next launch.'))
         clear = self.ttk.Button(f, text=_('Delete shader cache', 'Удалить кэш шейдеров'), command=self.clear_cache)
         self.row(f, _('Shader cache', 'Кэш шейдеров'), clear,
                  _('Deletes the saved shaders and pipelines of this saves folder. Use it if graphics look '

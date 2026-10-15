@@ -55,6 +55,8 @@ ldd "$dest/bin/gow3-probe.exe" "$dest/bin/gow3-gpu-capabilities.exe" |
     done
 cp -r scripts patches "$dest/"
 cp run.py LICENSE README.md packaging/windows/README-Windows.txt "$dest/"
+# The shader seed (tools/export_shader_seed.py) for the launcher's shader pre-compilation, when there is one.
+[[ -f packaging/windows/shader_seed.zip ]] && cp packaging/windows/shader_seed.zip "$dest/"
 find "$dest" -name __pycache__ -prune -exec rm -r {} +
 [[ -f $dest/scripts/discord_presence.py ]] || { echo 'scripts/discord_presence.py is missing from the package' >&2; exit 1; }
 grep -Eq "^CLIENT_ID = '[0-9]+'" "$dest/scripts/discord_presence.py" ||

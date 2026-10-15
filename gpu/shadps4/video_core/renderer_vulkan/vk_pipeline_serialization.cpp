@@ -15,6 +15,8 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <fstream>
+#include <map>
+#include <miniz.h>
 #include <sstream>
 #include <map>
 #ifdef _WIN32
@@ -1165,6 +1167,44 @@ void PipelineCache::WarmUp(const std::function<void(u32, u32)>& progress) {
     Storage::DataBase::Instance().FinishPreload();
 }
 
+// gow3: a saved shader translated again from the GCN code in the game's files. The saved meta
+// holds what the guest's memory held at the first compile: the recorded resource data replaces
+// the walk of the resource tables, and the recorded attribute V#s replace the fetch shader.
+bool PipelineCache::TranslateSaved(const Shader::Info& saved,
+                                   const Shader::StageSpecialization& spec,
+                                   const std::optional<Shader::Gcn::FetchShaderData>& fetch,
+                                   const std::vector<AmdGpu::Buffer>& fetch_buffers,
+                                   std::span<const u32> code, Shader::Info& info,
+                                   std::vector<u32>& spv) {
+    if (saved.hw_stage == Shader::HwStage::Geometry) {
+        return false; // its runtime info points at the copy shader in guest memory
+    }
+    if (saved.has_fetch_shader && fetch_buffers.empty()) {
+        return false; // saved before the attribute V#s were recorded
+    }
+    std::array<u32, Shader::ShaderParams::NumShaderUserData> user_data{};
+    std::copy_n(saved.flattened_ud_buf.begin(),
+                std::min(user_data.size(), saved.flattened_ud_buf.size()), user_data.begin());
+    const Shader::ShaderParams params{user_data, code, saved.pgm_hash};
+    info = Shader::Info{saved.hw_stage, saved.sw_stage, params};
+    Shader::RuntimeInfo runtime = spec.runtime_info;
+    Shader::Backend::Bindings binding = spec.start;
+    Shader::Gcn::FetchShaderSnapshot snapshot;
+    snapshot.info = &info;
+    snapshot.fetch = fetch;
+    snapshot.buffers = fetch_buffers;
+    std::optional<Shader::Gcn::ScopedFetchShaderSnapshot> scoped_snapshot;
+    if (saved.has_fetch_shader) {
+        scoped_snapshot.emplace(snapshot);
+    }
+    Shader::Info::recorded_flat_buf = &saved.flattened_ud_buf;
+    const auto ir = Shader::TranslateProgram(code, pools, info, runtime, profile);
+    Shader::Info::recorded_flat_buf = nullptr;
+    spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime, ir, binding);
+    info.user_data = {}; // pointed at the local array
+    return !info.translation_failed;
+}
+
 // gow3 (GOW3_SPIKE_TRANSLATE=<index file>): checks that the saved SPIR-V can be rebuilt from the
 // game's own files. For every saved shader meta it reads the GCN code named by the index (lines of
 // "hash file header_pos code_start length"), translates it with the recorded runtime info and
@@ -1256,32 +1296,15 @@ void PipelineCache::SpikeTranslate(const char* index_path) {
                 continue;
             }
         }
-        std::array<u32, Shader::ShaderParams::NumShaderUserData> user_data{};
-        std::copy_n(saved.info.flattened_ud_buf.begin(),
-                    std::min(user_data.size(), saved.info.flattened_ud_buf.size()),
-                    user_data.begin());
         std::printf("Spike translate: %#018lx %d\n", static_cast<unsigned long>(hash),
                     int(hw_stage));
         std::fflush(stdout);
-        const Shader::ShaderParams params{user_data, code, hash};
-        Shader::Info info{hw_stage, saved.info.sw_stage, params};
-        Shader::RuntimeInfo runtime = spec.runtime_info;
-        Shader::Backend::Bindings binding = spec.start;
-        // The recorded resource data replaces the walk of the guest's resource tables, and the
-        // recorded attribute V#s replace the fetch shader read from guest memory.
-        Shader::Gcn::FetchShaderSnapshot snapshot;
-        snapshot.info = &info;
-        snapshot.fetch = fetch;
-        snapshot.buffers = fetch_buffers;
-        std::optional<Shader::Gcn::ScopedFetchShaderSnapshot> scoped_snapshot;
-        if (saved.info.has_fetch_shader) {
-            scoped_snapshot.emplace(snapshot);
+        Shader::Info info;
+        std::vector<u32> spv;
+        if (!TranslateSaved(saved.info, spec, fetch, fetch_buffers, code, info, spv)) {
+            ++differ;
+            continue;
         }
-        Shader::Info::recorded_flat_buf = &saved.info.flattened_ud_buf;
-        const auto ir = Shader::TranslateProgram(code, pools, info, runtime, profile);
-        Shader::Info::recorded_flat_buf = nullptr;
-        const auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime, ir, binding);
-        scoped_snapshot.reset();
         if (spv == saved_spv) {
             ++same;
         } else {
@@ -1303,9 +1326,10 @@ void PipelineCache::SpikeTranslate(const char* index_path) {
     std::fflush(stdout);
 }
 
-void PipelineCache::StartOnDemand() {
+void PipelineCache::StartOnDemand(const SeedImport* seed) {
     const bool compatible = CheckCacheProfile();
     auto& db = Storage::DataBase::Instance();
+    bool saved_programs = false;
     // Launcher: "Reuse compiled shaders from disk" (GOW3_DISK_SHADERS), on by default.
     const bool disk_on = EmulatorSettingsImpl::Flag("GOW3_DISK_SHADERS", true) &&
                          !Gow3Toggle::Disabled(Gow3Toggle::DiskShaders);
@@ -1329,10 +1353,15 @@ void PipelineCache::StartOnDemand() {
             std::printf("Pipeline startup: shader store rebuilt for on-demand reads\n");
         } else {
             IndexDiskShaders();
-            // Launcher: "Read the shader cache into memory at start" (GOW3_SHADER_PREFETCH).
-            if (EmulatorSettingsImpl::Flag("GOW3_SHADER_PREFETCH", true)) {
-                StartDiskPrefetch();
-            }
+            saved_programs = true;
+        }
+        // Before the prefetch thread starts: the import changes what the store holds.
+        if (seed && ImportSeed(*seed)) {
+            saved_programs = true;
+        }
+        // Launcher: "Read the shader cache into memory at start" (GOW3_SHADER_PREFETCH).
+        if (saved_programs && EmulatorSettingsImpl::Flag("GOW3_SHADER_PREFETCH", true)) {
+            StartDiskPrefetch();
         }
         disk_shaders = true;
     }
@@ -1566,6 +1595,286 @@ size_t PipelineCache::NewPermutationIndex(const Program& program) const {
         }
     }
     return program.modules.size();
+}
+
+// gow3: the GCN code of a seed shader from the game's files. The header that follows the code
+// names the shader, which is checked against the hash the seed expects.
+static std::vector<u32> ReadSeedCode(const std::filesystem::path& file, const SeedLocation& loc) {
+    std::ifstream in{file, std::ios::binary};
+    std::vector<u32> code(loc.length / sizeof(u32));
+    in.seekg(std::streamoff(loc.start));
+    in.read(reinterpret_cast<char*>(code.data()), std::streamsize(code.size() * sizeof(u32)));
+    if (!in || code.size() < 2 || code[0] != 0xBEEB03FF) {
+        return {};
+    }
+    std::array<char, 24> header{};
+    in.seekg(std::streamoff(loc.start + (u64(code[1]) + 1) * 8));
+    in.read(header.data(), std::streamsize(header.size()));
+    u64 hash{};
+    std::memcpy(&hash, header.data() + 16, sizeof(hash));
+    if (!in || std::memcmp(header.data(), "OrbShdr", 7) != 0 || hash != loc.hash) {
+        return {};
+    }
+    return code;
+}
+
+// gow3: adds the shaders and pipelines of a seed to the store, ahead of the warm-up that builds
+// them. A seed shader is translated again from the player's own game files; its permutation
+// number is the player's, so the pipeline keys are rewritten to the numbers used here.
+bool PipelineCache::ImportSeed(const SeedImport& seed) {
+    auto& db = Storage::DataBase::Instance();
+    if (!db.IsOpened() || !db.ConcurrentReads()) {
+        return false;
+    }
+    const auto started = std::chrono::steady_clock::now();
+    // A seed already imported (same file, same game folder) is not read again: the marker goes
+    // with the rest of the store when it is rebuilt.
+    std::error_code error;
+    const std::string stamp =
+        fmt::format("{}:{}:{}", std::filesystem::file_size(seed.seed, error),
+                    std::filesystem::last_write_time(seed.seed, error).time_since_epoch().count(),
+                    seed.game_dir.string());
+    std::vector<u8> imported;
+    db.Load(Storage::BlobType::ShaderProfile, "seed", imported);
+    if (imported == std::vector<u8>(stamp.begin(), stamp.end())) {
+        std::printf("Shader seed: already in the store\n");
+        return true;
+    }
+    mz_zip_archive zip{};
+    if (!mz_zip_reader_init_file(&zip, seed.seed.string().c_str(), 0)) {
+        std::printf("Shader seed: %s cannot be read\n", seed.seed.string().c_str());
+        return false;
+    }
+    SCOPE_EXIT { mz_zip_reader_end(&zip); };
+    const auto read = [&](mz_uint index) {
+        mz_zip_archive_file_stat stat{};
+        std::vector<u8> data;
+        if (mz_zip_reader_file_stat(&zip, index, &stat)) {
+            data.resize(stat.m_uncomp_size);
+            if (!mz_zip_reader_extract_to_mem(&zip, index, data.data(), data.size(), 0)) {
+                data.clear();
+            }
+        }
+        return data;
+    };
+    std::vector<mz_uint> meta_files, key_files;
+    std::unordered_map<u64, SeedLocation> locations;
+    for (mz_uint i = 0; i < mz_zip_reader_get_num_files(&zip); ++i) {
+        mz_zip_archive_file_stat stat{};
+        if (!mz_zip_reader_file_stat(&zip, i, &stat)) {
+            continue;
+        }
+        const std::string_view name{stat.m_filename};
+        if (name.starts_with("meta/")) {
+            meta_files.push_back(i);
+        } else if (name.starts_with("key/")) {
+            key_files.push_back(i);
+        } else if (name == "locations.txt") {
+            const auto text = read(i);
+            std::istringstream lines{std::string{text.begin(), text.end()}};
+            std::string line;
+            while (std::getline(lines, line)) {
+                if (!line.empty() && line.back() == '\r') {
+                    line.pop_back();
+                }
+                if (auto loc = ParseSeedLocation(line)) {
+                    const u64 hash = loc->hash;
+                    locations.emplace(hash, std::move(*loc));
+                }
+            }
+        }
+    }
+
+    struct SeedShader {
+        std::unique_ptr<Program> program = std::make_unique<Program>();
+        Shader::StageSpecialization spec{};
+        std::optional<Shader::Gcn::FetchShaderData> fetch;
+        std::vector<AmdGpu::Buffer> buffers;
+        size_t idx{};
+        u64 old_hash{}; ///< the permutation hash in the seed's keys
+        u64 new_hash{}; ///< the one here; 0 while the shader is not in the store
+    };
+    std::vector<std::unique_ptr<SeedShader>> shaders;
+    std::map<u64, std::vector<SeedShader*>> by_program;
+    for (const auto index : meta_files) {
+        Serialization::Archive ar{read(index)};
+        if (ar.SizeBytes() < 8) {
+            continue;
+        }
+        auto shader = std::make_unique<SeedShader>();
+        shader->spec.info = &shader->program->info;
+        if (!LoadShaderMeta(ar, shader->program->info, shader->fetch, shader->spec, shader->idx,
+                            &shader->buffers)) {
+            continue;
+        }
+        shader->old_hash = HashCombine(shader->program->info.pgm_hash, shader->idx);
+        by_program[shader->program->info.pgm_hash].push_back(shader.get());
+        shaders.push_back(std::move(shader));
+    }
+
+    u32 done = 0;
+    const u32 total = u32(shaders.size() + key_files.size());
+    const auto step = [&] {
+        if (seed.progress) {
+            seed.progress(++done, total);
+        }
+    };
+    u32 translated = 0, matched = 0, no_code = 0, failed = 0, no_index = 0;
+    for (auto& [hash, perms] : by_program) {
+        std::ranges::sort(perms, {}, &SeedShader::idx);
+        struct Saved {
+            u32 idx;
+            std::unique_ptr<Program> program;
+            Shader::StageSpecialization spec;
+        };
+        std::vector<unsigned> taken;
+        std::vector<Saved> saved;
+        if (const auto found = disk_permutations.find(hash); found != disk_permutations.end()) {
+            taken.assign(found->second.begin(), found->second.end());
+            for (const u32 idx : found->second) {
+                std::vector<u8> meta;
+                db.Load(Storage::BlobType::ShaderMeta,
+                        fmt::format("{:#018x}", HashCombine(hash, u64{idx})), meta);
+                Serialization::Archive ar{std::move(meta)};
+                Saved entry{idx, std::make_unique<Program>(), {}};
+                entry.spec.info = &entry.program->info;
+                std::optional<Shader::Gcn::FetchShaderData> fetch;
+                size_t perm_idx{};
+                if (ar.SizeBytes() >= 8 &&
+                    LoadShaderMeta(ar, entry.program->info, fetch, entry.spec, perm_idx) &&
+                    perm_idx == idx) {
+                    saved.push_back(std::move(entry));
+                }
+            }
+        }
+        for (SeedShader* shader : perms) {
+            // The same permutation may be saved here under another number.
+            const auto same = std::ranges::find_if(
+                saved, [&](const Saved& entry) { return entry.spec == shader->spec; });
+            if (same != saved.end()) {
+                shader->new_hash = HashCombine(hash, u64{same->idx});
+                ++matched;
+                step();
+                continue;
+            }
+            const auto free = FreePermutationIndex(taken);
+            const auto location = locations.find(hash);
+            if (!free) {
+                ++no_index;
+                step();
+                continue;
+            }
+            std::vector<u32> code;
+            if (location != locations.end()) {
+                code = ReadSeedCode(seed.game_dir / location->second.file, location->second);
+            }
+            if (code.empty()) {
+                ++no_code;
+                step();
+                continue;
+            }
+            Shader::Info info;
+            std::vector<u32> spv;
+            if (!TranslateSaved(shader->program->info, shader->spec, shader->fetch,
+                                shader->buffers, code, info, spv)) {
+                ++failed;
+                step();
+                continue;
+            }
+            taken.push_back(*free);
+            // A later seed permutation equal to this one takes this number (the game does the
+            // same at run time): their keys then name one shader.
+            saved.push_back({*free, nullptr, shader->spec});
+            shader->new_hash = HashCombine(hash, u64{*free});
+            RegisterShaderBinary(std::move(spv), hash, *free);
+            RegisterShaderMeta(info, shader->fetch, shader->spec, shader->new_hash, *free,
+                               &shader->buffers);
+            ++translated;
+            step();
+        }
+    }
+
+    // A key names its shaders by permutation hash: the seed's numbers become the ones used here.
+    std::unordered_map<u64, u64> renumbered;
+    for (const auto& shader : shaders) {
+        if (shader->new_hash) {
+            renumbered.emplace(shader->old_hash, shader->new_hash);
+        }
+    }
+    u32 keys_added = 0, keys_known = 0, keys_dropped = 0;
+    for (const auto index : key_files) {
+        step();
+        Serialization::Archive ar{read(index)};
+        if (ar.SizeBytes() < 8) {
+            continue;
+        }
+        Serialization::Reader reader{ar};
+        u32 version{}, is_compute{};
+        reader.Read(version);
+        reader.Read(is_compute);
+        if (version != Serialization::PipelineKeyVersion) {
+            continue;
+        }
+        if (is_compute) {
+            ComputePipelineKey key;
+            key.Deserialize(ar);
+            ComputePipeline::SerializationSupport sdata{};
+            sdata.Deserialize(ar);
+            const auto found = renumbered.find(key.value);
+            if (found == renumbered.end()) {
+                ++keys_dropped;
+                continue;
+            }
+            key.value = found->second;
+            if (!disk_pipeline_keys.insert(fmt::format("c_{:#018x}", key.value)).second) {
+                ++keys_known;
+                continue;
+            }
+            RegisterPipelineData(key, sdata);
+        } else {
+            GraphicsPipelineKey key;
+            key.Deserialize(ar);
+            GraphicsPipeline::SerializationSupport sdata{};
+            sdata.Deserialize(ar);
+            bool complete = true;
+            for (auto& stage_hash : key.stage_hashes) {
+                if (!stage_hash) {
+                    continue;
+                }
+                const auto found = renumbered.find(stage_hash);
+                if (found == renumbered.end()) {
+                    complete = false;
+                    break;
+                }
+                stage_hash = found->second;
+            }
+            if (!complete) {
+                ++keys_dropped;
+                continue;
+            }
+            const u64 hash = std::hash<GraphicsPipelineKey>{}(key);
+            if (!disk_pipeline_keys.insert(fmt::format("g_{:#018x}", hash)).second) {
+                ++keys_known;
+                continue;
+            }
+            RegisterPipelineData(key, hash, sdata);
+        }
+        ++keys_added;
+    }
+
+    db.WaitIdle();
+    db.Save(Storage::BlobType::ShaderProfile, "seed", std::vector<u8>(stamp.begin(), stamp.end()));
+    disk_permutations.clear();
+    disk_pipeline_keys.clear();
+    IndexDiskShaders();
+    std::printf("Shader seed: %zu shaders (%u translated, %u already saved, %u without code, %u "
+                "failed, %u without a free number), %u pipelines added (%u already saved, %u "
+                "left out) in %.1f s\n",
+                shaders.size(), translated, matched, no_code, failed, no_index, keys_added,
+                keys_known, keys_dropped,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+    std::fflush(stdout);
+    return true;
 }
 
 bool PipelineCache::NewPipelineKey(const std::string& name) {

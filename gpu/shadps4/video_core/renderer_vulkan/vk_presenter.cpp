@@ -328,9 +328,12 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     // Launcher "Shader pre-compilation": build every saved pipeline ahead of time, either while
     // playing (background) or on the loading screen (start).
     const Precompile precompile = ParsePrecompile(std::getenv("GOW3_SHADER_PRECOMPILE"));
-    const auto warm_up_on_loading_screen = [&] {
-        Gow3Overlay::SetLoading(true, 0, 0);
+    const auto report_progress = [&](const char* title, u32 done, u32 total) {
+        Gow3Overlay::SetLoading(true, done, total, title);
         PresentLoadingFrame();
+    };
+    const auto warm_up_on_loading_screen = [&](const char* title) {
+        report_progress(title, 0, 0);
         auto last = std::chrono::steady_clock::now();
         rasterizer->GetPipelineCache().WarmUp([&](u32 done, u32 total) {
             const auto now = std::chrono::steady_clock::now();
@@ -338,24 +341,52 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
                 return;
             }
             last = now;
-            Gow3Overlay::SetLoading(true, done, total);
-            PresentLoadingFrame();
+            report_progress(title, done, total);
         });
         Gow3Overlay::SetLoading(false, 0, 0);
     };
+    static constexpr const char* ImportTitle = "Preparing shaders from your game files...";
+    static constexpr const char* BuildTitle = "Compiling shaders...";
+    // "Before the game starts" also adds the shaders of the shipped seed (GOW3_SHADER_SEED) to
+    // the store, translated from the player's own game files (GOW3_GAME_DIR).
+    std::optional<SeedImport> seed;
+    if (precompile != Precompile::Off) {
+        const char* seed_path = std::getenv("GOW3_SHADER_SEED");
+        const char* game_dir = std::getenv("GOW3_GAME_DIR");
+        if (seed_path && *seed_path && game_dir && *game_dir &&
+            std::filesystem::exists(seed_path)) {
+            report_progress(ImportTitle, 0, 0);
+            seed = SeedImport{
+                seed_path, game_dir,
+                [&report_progress, last = std::chrono::steady_clock::now()](u32 done,
+                                                                             u32 total) mutable {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now - last < std::chrono::milliseconds(250) && done != total) {
+                        return;
+                    }
+                    last = now;
+                    report_progress(ImportTitle, done, total);
+                }};
+        } else {
+            std::printf("Shader seed: GOW3_SHADER_SEED or GOW3_GAME_DIR missing, nothing to add\n");
+        }
+    }
     if (UseOnDemandPipelines(binary_cache, instance.GetPipelineBinaryGlobalKey().keySize != 0,
                             capture_only)) {
         // The on-demand start sets up the disk shaders (stable permutation numbers), which the
         // warm-ups below rely on.
-        rasterizer->GetPipelineCache().StartOnDemand();
+        rasterizer->GetPipelineCache().StartOnDemand(seed ? &*seed : nullptr);
         std::printf("Pipeline startup: shader pre-compilation %s\n",
                     precompile == Precompile::Start        ? "before start"
                     : precompile == Precompile::Background ? "in the background"
                                                            : "off");
         if (precompile == Precompile::Background) {
+            // The import (a few seconds, once) shows on the loading screen; the pipelines are
+            // then built while the game runs.
+            Gow3Overlay::SetLoading(false, 0, 0);
             rasterizer->GetPipelineCache().StartBackgroundWarmUp();
         } else if (precompile == Precompile::Start) {
-            warm_up_on_loading_screen();
+            warm_up_on_loading_screen(BuildTitle);
         }
         return;
     }
@@ -368,7 +399,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         rasterizer->GetPipelineCache().StartBackgroundWarmUp()) {
         return;
     }
-    warm_up_on_loading_screen();
+    warm_up_on_loading_screen(nullptr);
 
 }
 

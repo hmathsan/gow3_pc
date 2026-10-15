@@ -66,6 +66,7 @@ std::atomic<bool> menu_open{false};
 bool r3_down = false, l2_down = false;
 std::atomic<bool> loading{false};
 std::atomic<u32> loading_done{0}, loading_total{0};
+std::atomic<const char*> loading_title{nullptr};
 std::atomic<u32> background_done{0}, background_total{0};
 std::atomic<u32> prefetch_done{0}, prefetch_total{0};
 std::atomic<s64> prefetch_until{0}; // "ready" stays this long after the last program
@@ -782,7 +783,8 @@ void LoadingScreen() {
                      ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
     const u32 done = loading_done, total = loading_total;
     ImGui::SetWindowFontScale(1.6f);
-    ImGui::TextUnformatted(total ? "Loading shader cache..." : "Preparing graphics...");
+    const char* title = loading_title;
+    ImGui::TextUnformatted(title ? title : total ? "Loading shader cache..." : "Preparing graphics...");
     ImGui::SetWindowFontScale(1.0f);
     if (total) {
         char count[64];
@@ -1220,7 +1222,8 @@ void NoteShaderCompiles(u32 pending, u32 started) {
     compile_until = now + 2000;
 }
 
-void SetLoading(bool active, u32 done, u32 total) {
+void SetLoading(bool active, u32 done, u32 total, const char* title) {
+    loading_title = title;
     loading_done = done;
     loading_total = total;
     loading = active;
