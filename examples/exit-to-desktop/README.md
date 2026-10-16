@@ -30,8 +30,8 @@ mod's file instead of the game's (the script is untouched by texture mods such a
 python pause_menu.py "mods/Xbox Prompts/EXEC/WAD/PS4_LE/R_UI.WAD" --out "mods/Xbox Prompts + Exit/EXEC/WAD/PS4_LE/R_UI.WAD"
 ```
 
-and enable only the combined one. The launcher's **In-game button icons** option mounts its own
-copy over any mod: keep it on *Original*.
+and enable only the combined one. The launcher's **In-game button icons** option works from the
+game as the mods leave it, so its copy keeps the rows.
 
 ## How it works
 
