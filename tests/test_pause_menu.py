@@ -1,12 +1,16 @@
-"""Exit to Desktop rows (scripts/pause_menu.py). The script is the game's own, so the patch is
+"""Exit to Desktop rows (examples/exit-to-desktop/pause_menu.py). The script is the game's own, so the patch is
 checked on the dump's R_UI.WAD when GOW3_GAME_DIR points at one; the refusals need no files."""
 import os
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from paths import ROOT  # noqa: F401  (puts scripts/ on the path)
+from paths import ROOT
+
+sys.path.insert(0, str(ROOT / 'examples' / 'exit-to-desktop'))
 import pause_menu
 from pause_menu import Script, decode
 
@@ -32,12 +36,14 @@ class Refusals(unittest.TestCase):
         with self.assertRaises(ValueError):
             pause_menu.patch(bytearray(wad('TXRX_R_UI', b'x' * 8)))
 
-    def test_build_leaves_no_copy(self):
+    def test_command_writes_nothing_for_another_script(self):
         with tempfile.TemporaryDirectory() as folder:
-            source = Path(folder) / 'R_UI.WAD'
+            source, out = Path(folder) / 'R_UI.WAD', Path(folder) / 'mod' / 'R_UI.WAD'
             source.write_bytes(wad('TXRX_R_UI', b'x' * 8))
-            self.assertEqual(pause_menu.build(folder, folder, source), {})
-            self.assertFalse((Path(folder) / 'pause_menu' / 'R_UI.WAD').exists())
+            result = subprocess.run([sys.executable, pause_menu.__file__, str(source), '--out', str(out)],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(out.exists())
 
 
 @unittest.skipUnless(GAME and (GAME / pause_menu.WAD).is_file(), 'needs GOW3_GAME_DIR with the game')

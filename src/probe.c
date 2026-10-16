@@ -522,7 +522,7 @@ static void install_stat_multipliers(Segment *segments, uint64_t count, uint64_t
     printf("Multipliers: damage %s, green/blue/gold orbs %s\n", damage ? "ready" : "unavailable",
            pickup ? "ready" : "unavailable");
 }
-/* The pause menu's "Exit to Desktop" row (src/menu_hook.h). Ends the process as the restart
+/* The "Exit to Desktop" mod's menu rows (src/menu_hook.h). Ends the process as the restart
  * does: GPU, audio and guest threads are still running, so no destructors. */
 static void menu_quit(void) {
     puts("Pause menu: Exit to Desktop");
@@ -532,9 +532,9 @@ static void menu_quit(void) {
 #endif
     _exit(0);
 }
-/* The row comes with the hook: its copy of R_UI.WAD (scripts/pause_menu.py) is mounted over the
- * game's, and over the glyphs' copy it was made from, only once the hook is in. */
-static void install_menu_exit(Segment *segments, uint64_t count, uint64_t size, const char *wad) {
+/* The hook is always in; only the "Exit to Desktop" mod (examples/exit-to-desktop) has a script
+ * that calls it, so nothing changes without that mod. */
+static void install_menu_exit(Segment *segments, uint64_t count, uint64_t size) {
     const uint64_t at = gow3_signature_find(image, size, &gow3_menu_site);
     if (at == UINT64_MAX || !mapped(segments, count, at, GOW3_MENU_HOOK_LENGTH) ||
         !gow3_menu_signature_match(image + at, size - at)) {
@@ -548,8 +548,7 @@ static void install_menu_exit(Segment *segments, uint64_t count, uint64_t size, 
         puts("Pause menu: Exit to Desktop unavailable (hook outside relative-jump range)");
         return;
     }
-    runtime_file_mount("/app0/EXEC/WAD/PS4_LE/R_UI.WAD", wad);
-    puts("Pause menu: Exit to Desktop ready");
+    puts("Pause menu: Exit to Desktop ready (needs the mod)");
 }
 /* G3PATCH2 (patches.py): the patches' image base, then byte writes at image offsets, applied
  * after relocation. A write may replace a whole base-relative pointer slot (60/90 FPS++ swap
@@ -670,7 +669,7 @@ int main(int argc, char **argv) {
 #endif
     int cpu_only = 0, strict_imports = 0, check_imports = 0;
     unsigned timeout_seconds = 10;
-    const char *content_profile=NULL, *app0=NULL, *user_dir=NULL, *patch_file=NULL, *isa_file=NULL, *pause_menu=NULL;
+    const char *content_profile=NULL, *app0=NULL, *user_dir=NULL, *patch_file=NULL, *isa_file=NULL;
     const char *mounts[8]; int mount_count=0;
     for (int i = 2; i < argc; ++i) {
         if (!strcmp(argv[i], "--cpu-only")) cpu_only = 1;
@@ -681,7 +680,6 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--user") && i+1<argc) user_dir=argv[++i];
         else if (!strcmp(argv[i], "--patches") && i+1<argc) patch_file=argv[++i];
         else if (!strcmp(argv[i], "--isa-rewrite") && i+1<argc) isa_file=argv[++i];
-        else if (!strcmp(argv[i], "--pause-menu") && i+1<argc) pause_menu=argv[++i];
         else if (!strcmp(argv[i], "--mount") && i+1<argc) {
             /* guest=host; the guest part never has '=', so the first one splits */
             const char *spec=argv[++i], *eq=strchr(spec,'=');
@@ -692,7 +690,7 @@ int main(int argc, char **argv) {
         else { fprintf(stderr, "Unknown option: %s\n", argv[i]); return 1; }
     }
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s boot.bin [--cpu-only] [--strict-imports] [--check-imports] [--content-profile file] [--app0 dir] [--user dir] [--patches file] [--isa-rewrite file] [--pause-menu R_UI.WAD] [--mount guest=host]... [--timeout seconds] | --vulkan-only | --cpu-features | --gamepad\n", argv[0]);
+        fprintf(stderr, "Usage: %s boot.bin [--cpu-only] [--strict-imports] [--check-imports] [--content-profile file] [--app0 dir] [--user dir] [--patches file] [--isa-rewrite file] [--mount guest=host]... [--timeout seconds] | --vulkan-only | --cpu-features | --gamepad\n", argv[0]);
         return 1;
     }
     if (!cpu_supported(missing, sizeof missing)) return 20;
@@ -939,7 +937,7 @@ int main(int argc, char **argv) {
     if (gpu_enabled) install_cheats(segments, ns, size);
     if (gpu_enabled) install_actor_watch(segments, ns, size);
     if (gpu_enabled) install_stat_multipliers(segments, ns, size);
-    if (gpu_enabled && pause_menu && app0) install_menu_exit(segments, ns, size, pause_menu);
+    if (gpu_enabled) install_menu_exit(segments, ns, size);
 #ifdef _WIN32
     printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
 #endif

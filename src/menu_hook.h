@@ -7,8 +7,8 @@
 
 /* CUSA01623 v01.02, image offset 0x1d5f0f: the menu script interpreter's builtin call (opcode
  * 0x13), right before the provider's vtable call. esi holds the function id (12 bits), eax the
- * provider index, rbp the interpreter frame. The pause menu's "Exit to Desktop" row
- * (scripts/pause_menu.py) calls function 0xfff, which no provider has: the stub sends it to
+ * provider index, rbp the interpreter frame. The "Exit to Desktop" mod's rows
+ * (examples/exit-to-desktop) call function 0xfff, which no provider has: the stub sends it to
  * `quit`, which does not return; every other call replays the two instructions and goes on. */
 enum { GOW3_MENU_HOOK_OFFSET = 0x1d5f0f, GOW3_MENU_HOOK_LENGTH = 11, GOW3_MENU_EXIT_FUNCTION = 0xfff };
 static const unsigned char gow3_menu_original[GOW3_MENU_HOOK_LENGTH] = {

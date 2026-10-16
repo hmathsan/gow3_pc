@@ -27,14 +27,14 @@ that mark in a local nothing else uses, and FailSafeYes, given the mark, calls b
 src/menu_hook.h turns into the end of the process, instead of what Quit Game does. Both states get a
 copy of their block with the few instructions added, written over WadChoose's dead code.
 """
-import json
+import argparse
 from pathlib import Path
-import shutil
 import struct
+import sys
 
-from glyphs import entries
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
+from glyphs import entries  # noqa: E402
 
-VERSION = 6  # of the patch: a change rebuilds the cached copy
 WAD = 'EXEC/WAD/PS4_LE/R_UI.WAD'
 LABEL = b'Exit to Desktop'
 EXIT_CALL = b'\x13\x0f\xff\x43'  # builtin 0xfff (src/menu_hook.h), then pop
@@ -386,28 +386,20 @@ def patch(data):
     data[:] = work
 
 
-def build(game, out, source=None):
-    """{guest path: patched copy} for run.py to mount, from `source` (another patched copy) or the
-    game's own R_UI.WAD; {} when the script is not the one this patch knows. The copy in
-    out/pause_menu is kept until the source changes."""
-    source = Path(source or Path(game) / WAD)
-    target = Path(out) / 'pause_menu'
-    copy = target / Path(WAD).name
-    if not source.is_file():
-        return {}
-    stamp = json.dumps([VERSION, str(source), source.stat().st_size, source.stat().st_mtime_ns])
-    stamp_file = target / 'stamp.json'
-    if not (stamp_file.is_file() and stamp_file.read_text() == stamp):
-        shutil.rmtree(target, ignore_errors=True)
-        target.mkdir(parents=True)
-        data = bytearray(source.read_bytes())
-        try:
-            patch(data)
-        except ValueError as error:
-            print(f'Pause menu: {error}; no Exit to Desktop row', flush=True)
-            return {}
-        copy.write_bytes(data)
-        stamp_file.write_text(stamp)  # last: an interrupted build is redone
-    if not copy.is_file():
-        return {}
-    return {'/app0/' + WAD: copy}
+def main():
+    parser = argparse.ArgumentParser(description='Writes a copy of R_UI.WAD with the Exit to Desktop rows.')
+    parser.add_argument('wad', type=Path, help="the game's EXEC/WAD/PS4_LE/R_UI.WAD (or a mod's copy of it)")
+    parser.add_argument('--out', type=Path, required=True, help='where the patched copy goes')
+    args = parser.parse_args()
+    data = bytearray(args.wad.read_bytes())
+    try:
+        patch(data)
+    except ValueError as error:
+        sys.exit(f'{args.wad}: {error}; not the script this patch was made for')
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_bytes(data)
+    print(f'{args.out}: {len(data)} bytes')
+
+
+if __name__ == '__main__':
+    main()
