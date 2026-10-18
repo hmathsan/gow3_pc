@@ -1636,8 +1636,14 @@ void TextureCache::GarbageCollectImages() {
         // Discrete GPUs under 8 GB use it too (see the constructor).
         // GOW3_GC_BUDGET_MB=N: a fixed budget instead of the driver's (tests a small card).
         if (budget_relative_gc) {
-            const u64 budget =
-                ForcedGcBudget() ? ForcedGcBudget() : instance.GetDeviceMemoryBudgetNow();
+            u64 budget = ForcedGcBudget();
+            if (!budget) {
+                budget = instance.GetDeviceMemoryBudgetNow();
+                if (!instance.IsIntegrated()) {
+                    // The startup budget keeps this reserve for the system (vk_instance.cpp).
+                    budget -= std::min<u64>(budget / 8, 1_GB);
+                }
+            }
             if (budget != 0) {
                 trigger_gc_memory = budget / 10 * 7;
                 pressure_gc_memory = budget / 100 * 85;
