@@ -453,6 +453,7 @@ private:
     u64 trigger_gc_memory = 0;
     u64 pressure_gc_memory = 0;
     u64 critical_gc_memory = 0;
+    bool budget_relative_gc = false; ///< gow3: marks follow the driver's current budget
     u64 total_used_samplers = 0;
     u64 trigger_gc_samplers = 0;
     u64 pressure_gc_samplers = 0;

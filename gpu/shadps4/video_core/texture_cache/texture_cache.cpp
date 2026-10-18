@@ -30,6 +30,15 @@ namespace VideoCore {
 static constexpr u64 PageShift = 12;
 static constexpr u64 NumFramesBeforeRemoval = 32;
 
+// gow3: GOW3_GC_BUDGET_MB=N: pretend the device budget is N MiB (tests a small card on a big one).
+static u64 ForcedGcBudget() {
+    static const u64 budget = [] {
+        const char* env = std::getenv("GOW3_GC_BUDGET_MB");
+        return env ? std::strtoull(env, nullptr, 10) << 20 : 0;
+    }();
+    return budget;
+}
+
 TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                            Vulkan::Runtime& runtime_, AmdGpu::Liverpool* liverpool_,
                            BufferCache& buffer_cache_, PageManager& tracker_)
@@ -55,10 +64,14 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
         return;
     }
 
-    const s64 device_local_memory = static_cast<s64>(instance.GetTotalMemoryBudget());
+    const s64 device_local_memory =
+        static_cast<s64>(ForcedGcBudget() ? ForcedGcBudget() : instance.GetTotalMemoryBudget());
     const s64 min_spacing_expected = device_local_memory - 1_GB;
     const s64 min_spacing_critical = device_local_memory - 512_MB;
     const s64 mem_threshold = std::min<s64>(device_local_memory, TARGET_GC_THRESHOLD);
+    // gow3: below the target the marks above sit at ~40% / 80% of the budget, so a 4-6 GB card
+    // stayed "pressured" all session and wrote GPU-modified images back with a full GPU drain.
+    budget_relative_gc = instance.IsIntegrated() || device_local_memory < TARGET_GC_THRESHOLD;
     const s64 min_vacancy_expected = (6 * mem_threshold) / 10;
     const s64 min_vacancy_critical = (2 * mem_threshold) / 10;
     pressure_gc_memory = static_cast<u64>(
@@ -1620,13 +1633,11 @@ void TextureCache::GarbageCollectImages() {
         // ~1 GB after its 8 GB system reserve: usage stayed above the critical mark, so the
         // collector evicted images used two or three frames ago on every submission and wrote
         // GPU-written ones back. Compare with the driver's current budget instead.
-        // GOW3_GC_BUDGET_MB=N: this rule with a fixed budget on any GPU (tests on a desktop).
-        static const u64 forced_budget = [] {
-            const char* env = std::getenv("GOW3_GC_BUDGET_MB");
-            return env ? std::strtoull(env, nullptr, 10) << 20 : 0;
-        }();
-        if (instance.IsIntegrated() || forced_budget) {
-            const u64 budget = forced_budget ? forced_budget : instance.GetDeviceMemoryBudgetNow();
+        // Discrete GPUs under 8 GB use it too (see the constructor).
+        // GOW3_GC_BUDGET_MB=N: a fixed budget instead of the driver's (tests a small card).
+        if (budget_relative_gc) {
+            const u64 budget =
+                ForcedGcBudget() ? ForcedGcBudget() : instance.GetDeviceMemoryBudgetNow();
             if (budget != 0) {
                 trigger_gc_memory = budget / 10 * 7;
                 pressure_gc_memory = budget / 100 * 85;
