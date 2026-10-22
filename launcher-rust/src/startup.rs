@@ -11,9 +11,8 @@ use crate::core::env::start_up_environment;
 use crate::core::launch::python_command;
 use crate::core::paths::Paths;
 use crate::core::settings::load_app_settings;
-use crate::core::update::update_dir;
+use crate::core::update::{is_packaged, update_dir};
 use crate::core::{desktop, legacy, platform};
-use crate::ui::update::is_packaged;
 use crate::APP_NAME;
 
 /// What the command line asks for.

@@ -25,8 +25,7 @@ use crate::ui::tasks::{blocking, blocking_or};
 use crate::ui::widgets::{Modal, ModalKind, ModalMessage};
 use crate::APP_NAME;
 
-/// The file name of the packaged Windows launcher (ruling R47: a source tree is not packaged).
-const PACKAGED_EXE: &str = "SpartanPort.exe";
+pub use crate::core::update::{is_packaged, PACKAGED_EXE};
 
 /// Where the update stands.
 #[derive(Debug, Clone, Default)]
@@ -181,14 +180,6 @@ fn show(state: &mut State, kind: ModalKind, text: String) {
 
 fn can_write(folder: &Path) -> bool {
     tempfile::NamedTempFile::new_in(folder).is_ok()
-}
-
-/// The Python's `FROZEN`: whether this is the packaged launcher (ruling R47).
-pub fn is_packaged() -> bool {
-    std::env::current_exe().is_ok_and(|exe| {
-        exe.file_name()
-            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(PACKAGED_EXE))
-    })
 }
 
 fn open_page(page: String) -> Task<Message> {

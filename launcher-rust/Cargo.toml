@@ -12,6 +12,7 @@ name = "spartanport_launcher"
 [[bin]]
 name = "spartanport-launcher"
 path = "src/main.rs"
+required-features = ["iced-ui"]
 
 [[bin]]
 name = "fake-game"
@@ -33,11 +34,16 @@ roxmltree = "0.21"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-rfd = "0.17"
-iced = { version = "0.14", features = ["wgpu", "tiny-skia", "image", "canvas", "advanced", "tokio"] }
+rfd = { version = "0.17", optional = true }
+iced = { version = "0.14", optional = true, features = ["wgpu", "tiny-skia", "image", "canvas", "advanced", "tokio"] }
 # The x86 decoder of `runner/isa_rewrite.rs`: the engine and version of the Python's binding, so the
 # sites are the same. `instr_info` gives the flow control and the register numbers and sizes.
 iced-x86 = { version = "=1.21.0", default-features = false, features = ["std", "decoder", "instr_info"] }
+
+[features]
+default = ["iced-ui"]
+# The iced window (`src/ui/`); `launcher-egui/` builds on `core` without it.
+iced-ui = ["dep:iced", "dep:rfd"]
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

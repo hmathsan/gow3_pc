@@ -4,6 +4,7 @@
 pub mod core;
 pub mod runner;
 pub mod startup;
+#[cfg(feature = "iced-ui")]
 pub mod ui;
 
 pub const APP_NAME: &str = "SpartanPort";

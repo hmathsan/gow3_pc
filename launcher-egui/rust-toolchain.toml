@@ -1,0 +1,4 @@
+# fastframe v0.14.0 and the crmne/egui fork need 1.98.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
