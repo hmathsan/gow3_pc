@@ -81,9 +81,19 @@ pub struct Textures {
 }
 
 pub fn decode(png: &[u8]) -> ([usize; 2], Vec<u8>) {
-    // The assets are embedded and checked by the iced launcher's tests.
+    // The assets are embedded and checked by the iced launcher's tests. egui takes no texture
+    // side over 2048 px before the GPU reports its own limit (the logo is 2088 px wide and is
+    // drawn 54 px tall), so larger pictures are shrunk to fit.
+    const MAX_SIDE: u32 = 2048;
     let image = image::load_from_memory(png)
-        .map(|i| i.to_rgba8())
+        .map(|i| {
+            if i.width().max(i.height()) > MAX_SIDE {
+                i.resize(MAX_SIDE, MAX_SIDE, image::imageops::FilterType::CatmullRom)
+            } else {
+                i
+            }
+            .to_rgba8()
+        })
         .unwrap_or_default();
     (
         [image.width() as usize, image.height() as usize],
