@@ -1,9 +1,10 @@
-// Spike: the launcher's shell (tab bar, drawer) and Home page on egui + fastframe, over the same
+// Spike: the launcher's shell (tab bar, drawer) and Home page on egui, over the same
 // `core` as the iced launcher. The drawer pages, splash, setup, PLAY and saving are not ported.
 #![windows_subsystem = "windows"]
 
 mod bidi;
 mod fire;
+mod fonts;
 mod home;
 
 use std::ffi::OsString;
@@ -127,10 +128,10 @@ pub struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, paths: Paths) -> Self {
-        set_fonts(&cc.egui_ctx);
         let (settings, _) = read_app_settings(&paths);
         let (ini, _) = read_ini(&paths.ini_path());
         let lang = launcher_language(&settings.get_str("ui_language"), system_language);
+        set_fonts(&cc.egui_ctx, &lang);
         let effects = !matches!(
             settings.get("launcher_effects"),
             Some(serde_json::Value::Bool(false))
@@ -179,12 +180,9 @@ impl App {
     }
 }
 
-/// Cinzel for the titles and tabs, the system's face for the rest, and fastframe's fallbacks
-/// (CJK, Arabic) behind both; hinting as the desktop asks (fastframe-text).
-fn set_fonts(ctx: &egui::Context) {
-    let mut fonts = fastframe_fonts::FontSetup::default()
-        .primary(fastframe_fonts::Primary::System)
-        .definitions();
+/// Cinzel for the titles and tabs, the system's faces for the rest (`fonts.rs`) behind it.
+fn set_fonts(ctx: &egui::Context, lang: &str) {
+    let mut fonts = fonts::definitions(lang);
     let faces: [(&str, &'static [u8]); 2] = [
         (
             CINZEL_BLACK,
@@ -205,13 +203,10 @@ fn set_fonts(ctx: &egui::Context) {
             .collect();
         fonts.families.insert(FontFamily::Name(name.into()), family);
     }
-    let rendering = fastframe_text::detect();
-    rendering.apply_to(&mut fonts);
     ctx.set_fonts(fonts);
     ctx.all_styles_mut(|style| {
         style.visuals = egui::Visuals::dark();
         style.visuals.override_text_color = Some(palette::TEXT);
-        rendering.apply_to_visuals(&mut style.visuals);
     });
 }
 
@@ -461,6 +456,7 @@ impl App {
             });
         if let Some(lang) = picked {
             self.set_language(lang);
+            set_fonts(ctx, lang);
         }
     }
 }

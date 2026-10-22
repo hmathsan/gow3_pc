@@ -1,7 +1,7 @@
 // Vendored from crmne/spotifast src/bidi.rs, tests left out. Copyright (c) 2026 Carmine Paolino,
 // MIT License: see ../LICENSE-spotifast for the full notice. egui (even crmne's fork) shapes
-// right-to-left runs but places them in logical order, and neither egui nor fastframe ships the
-// reordering; this is what the port would carry.
+// right-to-left runs but places them in logical order, and egui does not ship the reordering;
+// this is what the port would carry.
 #![allow(dead_code)]
 
 //! Right-to-left text support for egui.
@@ -329,8 +329,8 @@ fn reorder_row(row: &mut Row, text: &str, pixels_per_point: f32) {
         // Both ends on whole physical pixels. epaint rasterizes each glyph
         // for its place on the pixel grid; moving the quad by a fraction
         // left the moved runs between pixels, blurred (0.21 px at 133%).
-        let delta = fastframe_text::snap_to_pixels(cursor, pixels_per_point)
-            - fastframe_text::snap_to_pixels(atom.min_x, pixels_per_point);
+        let delta =
+            snap_to_pixels(cursor, pixels_per_point) - snap_to_pixels(atom.min_x, pixels_per_point);
         if delta.abs() > 0.01 {
             for glyph in &mut row.glyphs[atom.glyphs.clone()] {
                 glyph.pos.x += delta;
@@ -602,6 +602,16 @@ fn repack_glyph_vertices(row: &mut Row) {
         .map(|glyph| usize::from(!glyph.uv_rect.is_nothing()) * 4)
         .sum::<usize>();
     row.visuals.glyph_vertex_range = range.start..range.start + glyph_len;
+}
+
+/// `value` on a whole physical pixel (fastframe-text's `snap_to_pixels`, which Spotifast calls
+/// here).
+fn snap_to_pixels(value: f32, pixels_per_point: f32) -> f32 {
+    if pixels_per_point.is_finite() && pixels_per_point > 0.0 {
+        (value * pixels_per_point).round() / pixels_per_point
+    } else {
+        value
+    }
 }
 
 /// A letter of a right-to-left script.

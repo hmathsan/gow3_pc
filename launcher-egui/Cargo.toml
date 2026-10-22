@@ -1,4 +1,4 @@
-# Spike: the launcher's shell and Home page on egui + fastframe, over the same `core` as the iced
+# Spike: the launcher's shell and Home page on egui, over the same `core` as the iced
 # launcher (`../launcher-rust`, built without its `iced-ui` feature). See README.md.
 [package]
 name = "spartanport-launcher-egui"
@@ -19,9 +19,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # glow, as Spotifast: a 2D launcher needs no wgpu.
 eframe = { version = "0.36.2", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
 egui = "0.36.2"
-# Same tag for every fastframe crate.
-fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.14.0" }
-fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.14.0" }
+# The system's font files, mapped instead of read (`fonts.rs`).
+memmap2 = "0.9"
 
 # crmne/egui apps-0.36.2, the revision Spotifast pins: egui 0.36.2 plus right-to-left shaping
 # (emilk/egui#8577, open upstream) and the busy-loop fix (emilk/egui#8398). Every egui crate from
