@@ -16,14 +16,16 @@ use egui::{
     CornerRadius, FontData, FontFamily, FontId, Key, Order, Pos2, Rect, Sense, Stroke, Ui, pos2,
     vec2,
 };
+use spartanport_launcher::core::env::environment_of;
 use spartanport_launcher::core::i18n::{
     LANGS, is_rtl, launcher_language, native_name, system_language, tr,
 };
 use spartanport_launcher::core::ini::{Ini, read_ini};
-use spartanport_launcher::core::paths::Paths;
+use spartanport_launcher::core::paths::{Paths, default_port_dir};
 use spartanport_launcher::core::platform;
 use spartanport_launcher::core::settings::{Settings, read_app_settings};
 use spartanport_launcher::core::update::{installed_release, stamp_path};
+use spartanport_launcher::runner::{self, RunContext};
 use spartanport_launcher::startup::{self, Route};
 use spartanport_launcher::{APP_NAME, VERSION};
 
@@ -492,15 +494,27 @@ fn main() {
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."));
+    // The same routes as the iced launcher's `main.rs`.
+    let port_dir = default_port_dir(&exe_dir);
     match startup::route(&args) {
         Route::Version => println!("{APP_NAME} {VERSION} (egui spike)"),
+        Route::Run | Route::Play => {
+            let paths = Paths::from_env(&port_dir, &|key| std::env::var(key).ok());
+            let context = RunContext {
+                port_dir: &paths.port_dir,
+                env: environment_of(std::env::vars_os()),
+                args: args.iter().skip(1).cloned().collect(),
+                out: &mut std::io::stdout(),
+            };
+            std::process::exit(runner::run(context))
+        }
         Route::Python => {
-            let paths = Paths::from_env(&exe_dir, &|key| std::env::var(key).ok());
+            let paths = Paths::from_env(&port_dir, &|key| std::env::var(key).ok());
             std::process::exit(startup::forward_to_python(&paths.port_dir, &args))
         }
         Route::Launcher => {
             startup::forward_environment();
-            let paths = Paths::from_env(&exe_dir, &|key| std::env::var(key).ok());
+            let paths = Paths::from_env(&port_dir, &|key| std::env::var(key).ok());
             startup::prepare(&paths);
             if let Err(error) = run(paths) {
                 eprintln!("{APP_NAME}: {error}");
